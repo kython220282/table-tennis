@@ -1,0 +1,431 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Table Tennis (Pong) with Difficulty & Win Score</title>
+  <style>
+    html,body { height:100%; margin:0; background:#3a4488; color:#ffffff; font-family:Arial, sans-serif; }
+    .container { display:flex; flex-direction:column; align-items:center; gap:12px; padding:14px; box-sizing:border-box; }
+    .top-controls, .bottom-controls { width:820px; max-width:95%; display:flex; align-items:center; justify-content:space-between; gap:12px; }
+    .top-left { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+    .label { color:#FFEDC7; font-weight:700; margin-right:6px; }
+    .difficulty { display:flex; gap:10px; align-items:center; }
+    input[type="number"] { width:80px; padding:6px 8px; border-radius:6px; border:1px solid #1e3b2b; background:#072018; color:#dff8e6; }
+    button { padding:8px 12px; border-radius:8px; border:none; background:#EED9B9; color:#5E0006; font-weight:700; cursor:pointer; }
+    button.secondary { background:#3b5566; color:#e6f0f8; }
+    button:hover { opacity:0.95; }
+    canvas { background:#800000 !important; /* Force canvas background to maroon */
+      box-shadow:0 8px 30px rgba(0,0,0,0.7); border:4px solid #d1c6ca; display:block; }
+    .info { color:#FFEDC7; text-align:center; font-size:13px; }
+    .score-panel { display:flex; gap:12px; align-items:center; }
+    .score-box { background:rgba(255,255,255,0.04); padding:8px 12px; border-radius:8px; font-weight:700; color:#e8fff2; }
+    .small { font-size:10px; color:#FFEDC7; }
+    .winner-overlay {
+      position:absolute; left:0; right:0; top:0; bottom:0; display:flex; align-items:center; justify-content:center;
+      pointer-events:none;
+    }
+    /* Keep layout tidy on narrow screens */
+    @media (max-width:480px) {
+      .top-controls, .bottom-controls { flex-direction:column; align-items:stretch; gap:8px; }
+      .top-left { justify-content:space-between; }
+      input[type="number"] { width:100%; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Top controls: difficulty and win score -->
+    <div class="top-controls">
+      <div class="top-left">
+        <div class="label">Difficulty:</div>
+        <div class="difficulty" id="difficultyChoices">
+          <label><input type="radio" name="difficulty" value="easy"> Easy</label>
+          <label><input type="radio" name="difficulty" value="medium" checked> Medium</label>
+          <label><input type="radio" name="difficulty" value="hard"> Hard</label>
+        </div>
+      </div>
+
+      <div style="display:flex; align-items:center; gap:8px;">
+        <div class="label">Points to win:</div>
+        <input type="number" id="winScoreInput" min="0" value="5" title="0 = unlimited">
+        <button id="applySettings">New Game</button>
+      </div>
+    </div>
+
+    <!-- Game canvas -->
+    <div style="position:relative;">
+      <canvas id="game" width="800" height="500"></canvas>
+      <div id="overlay" class="winner-overlay"></div>
+    </div>
+
+    <!-- Bottom: scores and controls -->
+    <div class="bottom-controls">
+      <div class="score-panel">
+        <div class="score-box" id="scoreDisplay">Computer: 0 &nbsp;&nbsp; You: 0</div>
+        <div class="small">Use Arrow Up / Arrow Down to move (right paddle). Press R to reset scores.</div>
+      </div>
+
+      <div style="display:flex; gap:8px;">
+        <button id="restartRound" class="secondary">Restart Round</button>
+        <button id="resetScores">Reset Scores</button>
+      </div>
+    </div>
+
+    <div class="info">Change difficulty and points above, then click "Apply Settings" to start a new game.</div>
+  </div>
+
+  <script>
+    // Canvas
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    // Elements
+    const scoreDisplay = document.getElementById('scoreDisplay');
+    const overlay = document.getElementById('overlay');
+    const applyBtn = document.getElementById('applySettings');
+    const winInput = document.getElementById('winScoreInput');
+    const difficultyRadios = document.getElementsByName('difficulty');
+
+    // Constants
+    const PADDLE_WIDTH = 12;
+    const PADDLE_HEIGHT = 100;
+    const PADDLE_MARGIN = 10;
+    const BALL_RADIUS = 8;
+
+    // Game variables (will be set by difficulty)
+    let settings = {
+      compSpeed: 5,
+      ballBaseSpeed: 5,
+      speedIncreaseOnHit: 0.2
+    };
+
+    // Scores and game state
+    let playerScore = 0;
+    let compScore = 0;
+    let winScore = parseInt(winInput.value) || 0; // 0 = unlimited
+    let gamePaused = false; // true when someone wins
+    let ball = null;
+
+    // Paddles
+    let player = {
+      x: canvas.width - PADDLE_WIDTH - PADDLE_MARGIN,
+      y: (canvas.height - PADDLE_HEIGHT) / 2,
+      width: PADDLE_WIDTH,
+      height: PADDLE_HEIGHT,
+      speed: 7
+    };
+    let computer = {
+      x: PADDLE_MARGIN,
+      y: (canvas.height - PADDLE_HEIGHT) / 2,
+      width: PADDLE_WIDTH,
+      height: PADDLE_HEIGHT,
+      speed: settings.compSpeed
+    };
+
+    // Input
+    const keys = { ArrowUp:false, ArrowDown:false };
+
+    // Initialize ball
+    function resetBall(direction, baseSpeedOverride) {
+      const base = (typeof baseSpeedOverride === 'number') ? baseSpeedOverride : settings.ballBaseSpeed;
+      const angle = (Math.random() * Math.PI / 4) - (Math.PI / 8); // small random angle
+      const dir = direction === 'left' ? -1 : 1;
+      return {
+        x: canvas.width / 2,
+        y: canvas.height / 2,
+        speed: base,
+        vx: dir * base * Math.cos(angle),
+        vy: base * Math.sin(angle)
+      };
+    }
+
+    // Draw helpers
+    function drawRect(x,y,w,h,color='#0f0') {
+      ctx.fillStyle = color;
+      ctx.fillRect(x,y,w,h);
+    }
+    function drawCircle(x,y,r,color='#ffd') {
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(x,y,r,0,Math.PI*2);
+      ctx.fill();
+    }
+    function drawNet() {
+      const segment = 12;
+      ctx.fillStyle = 'rgba(255,255,255,0.12)';
+      for (let y=0; y<canvas.height; y+=segment*1.8) {
+        ctx.fillRect(canvas.width/2 - 1, y, 2, segment);
+      }
+    }
+
+    // Main update loop
+    let rafId = null;
+    function update() {
+      if (gamePaused) {
+        // stop animating
+        cancelAnimationFrame(rafId);
+        rafId = null;
+        return;
+      }
+
+      // Player paddle movement
+      if (keys.ArrowUp) player.y -= player.speed;
+      if (keys.ArrowDown) player.y += player.speed;
+      // Clamp
+      if (player.y < 0) player.y = 0;
+      if (player.y + player.height > canvas.height) player.y = canvas.height - player.height;
+
+      // Simple AI
+      const compCenter = computer.y + computer.height / 2;
+      const delta = ball.y - compCenter;
+      let aiSpeed = computer.speed;
+      // Slightly reduce AI speed when ball is moving away (fairness)
+      if ((ball.vx > 0 && ball.x > canvas.width/2) || (ball.vx < 0 && ball.x < canvas.width/2)) {
+        aiSpeed *= 0.9;
+      }
+      if (Math.abs(delta) > 8) {
+        computer.y += Math.sign(delta) * Math.min(Math.abs(delta), aiSpeed);
+      }
+      // Clamp
+      if (computer.y < 0) computer.y = 0;
+      if (computer.y + computer.height > canvas.height) computer.y = canvas.height - computer.height;
+
+      // Move ball
+      ball.x += ball.vx;
+      ball.y += ball.vy;
+
+      // Top/bottom bounce
+      if (ball.y - BALL_RADIUS <= 0) {
+        ball.y = BALL_RADIUS;
+        ball.vy *= -1;
+      }
+      if (ball.y + BALL_RADIUS >= canvas.height) {
+        ball.y = canvas.height - BALL_RADIUS;
+        ball.vy *= -1;
+      }
+
+      // Left paddle (computer) collision
+      if (ball.x - BALL_RADIUS <= computer.x + computer.width) {
+        if (ball.y > computer.y && ball.y < computer.y + computer.height) {
+          handlePaddleHit(computer);
+          ball.x = computer.x + computer.width + BALL_RADIUS;
+        } else if (ball.x - BALL_RADIUS < 0) {
+          // Missed -> player scores
+          playerScore++;
+          updateScoreDisplay();
+          handlePoint('player');
+          return;
+        }
+      }
+
+      // Right paddle (player) collision
+      if (ball.x + BALL_RADIUS >= player.x) {
+        if (ball.y > player.y && ball.y < player.y + player.height) {
+          handlePaddleHit(player);
+          ball.x = player.x - BALL_RADIUS;
+        } else if (ball.x + BALL_RADIUS > canvas.width) {
+          // Missed -> computer scores
+          compScore++;
+          updateScoreDisplay();
+          handlePoint('computer');
+          return;
+        }
+      }
+
+      draw();
+      rafId = requestAnimationFrame(update);
+    }
+
+    function handlePaddleHit(paddle) {
+      // Increase speed slightly
+      ball.speed += settings.speedIncreaseOnHit;
+
+      // Impact position relative to paddle center (-1 to 1)
+      const paddleCenter = paddle.y + paddle.height / 2;
+      const relativeIntersectY = (ball.y - paddleCenter) / (paddle.height / 2);
+      const r = Math.max(-1, Math.min(1, relativeIntersectY));
+
+      const maxBounce = 75 * Math.PI / 180;
+      const angle = r * maxBounce;
+      const dir = (paddle === player) ? -1 : 1;
+
+      ball.vx = dir * ball.speed * Math.cos(angle);
+      ball.vy = ball.speed * Math.sin(angle);
+    }
+
+    // Drawing
+    function draw() {
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+      ctx.fillStyle = '#2F6B3F';
+      ctx.fillRect(0,0,canvas.width,canvas.height);
+
+      drawNet();
+      drawRect(computer.x, computer.y, computer.width, computer.height, '#F7C85C');
+      drawRect(player.x, player.y, player.width, player.height, '#F7C85C');
+      drawCircle(ball.x, ball.y, BALL_RADIUS, '#FFF6C0');
+
+      // Labels
+      ctx.fillStyle = '#e8ffe8';
+      ctx.font = '18px Arial';
+      ctx.textAlign = 'center';
+      ctx.fillText('Computer', canvas.width * 0.25, 22);
+      ctx.fillText('You', canvas.width * 0.75, 22);
+    }
+
+    // Score display
+    function updateScoreDisplay() {
+      scoreDisplay.textContent = `Computer: ${compScore}   You: ${playerScore}`;
+    }
+
+    // Handle a point scored
+    function handlePoint(whoScored) {
+      // If winScore > 0, check for winner
+      if (winScore > 0) {
+        if (playerScore >= winScore || compScore >= winScore) {
+          // We have a winner
+          const winnerText = playerScore > compScore ? 'You win!' : 'Computer wins';
+          showWinner(winnerText);
+          gamePaused = true;
+          return;
+        }
+      }
+      // Otherwise just restart round with ball toward the player who lost the point
+      const direction = (whoScored === 'player') ? 'left' : 'right';
+      // center paddles
+      player.y = (canvas.height - player.height) / 2;
+      computer.y = (canvas.height - computer.height) / 2;
+      ball = resetBall(direction);
+      draw();
+      // small delay before resume
+      setTimeout(() => {
+        if (!gamePaused) {
+          cancelAnimationFrame(rafId);
+          rafId = requestAnimationFrame(update);
+        }
+      }, 600);
+    }
+
+    // Show winner overlay
+    function showWinner(text) {
+      overlay.innerHTML = `<div style="background:rgba(0,0,0,0.6); color:#fff; padding:18px 28px; border-radius:12px; font-size:24px; font-weight:800; pointer-events:auto;">${text} — Click Apply or Reset to play again</div>`;
+      draw(); // final frame
+    }
+
+    // Reset everything (new game)
+    function resetGame(newWinScore, difficultyKey) {
+      // Update settings from difficulty if provided
+      if (difficultyKey) applyDifficulty(difficultyKey);
+
+      // Reset scores and state
+      playerScore = 0;
+      compScore = 0;
+      updateScoreDisplay();
+      winScore = (typeof newWinScore === 'number') ? newWinScore : winScore;
+      gamePaused = false;
+      overlay.innerHTML = '';
+
+      // reset paddles positions and ball
+      player.y = (canvas.height - player.height) / 2;
+      computer.y = (canvas.height - computer.height) / 2;
+      computer.speed = settings.compSpeed;
+      ball = resetBall('left');
+      draw();
+      // start loop
+      if (!rafId) {
+        rafId = requestAnimationFrame(update);
+      }
+    }
+
+    // Restart round without affecting scores
+    function restartRound() {
+      if (gamePaused) return;
+      player.y = (canvas.height - player.height) / 2;
+      computer.y = (canvas.height - computer.height) / 2;
+      ball = resetBall(Math.random() < 0.5 ? 'left' : 'right');
+      overlay.innerHTML = '';
+      if (!rafId) rafId = requestAnimationFrame(update);
+    }
+
+    // Apply difficulty selection
+    function applyDifficulty(key) {
+      if (key === 'easy') {
+        settings = { compSpeed: 3.0, ballBaseSpeed: 4.0, speedIncreaseOnHit: 0.12 };
+      } else if (key === 'medium') {
+        settings = { compSpeed: 5.0, ballBaseSpeed: 5.0, speedIncreaseOnHit: 0.2 };
+      } else if (key === 'hard') {
+        settings = { compSpeed: 8.0, ballBaseSpeed: 6.0, speedIncreaseOnHit: 0.35 };
+      }
+      // update computer speed immediately
+      computer.speed = settings.compSpeed;
+    }
+
+    // Get selected difficulty key
+    function getSelectedDifficulty() {
+      for (const r of difficultyRadios) {
+        if (r.checked) return r.value;
+      }
+      return 'medium';
+    }
+
+    // UI handlers
+    applyBtn.addEventListener('click', () => {
+      // Parse win score
+      let val = parseInt(winInput.value, 10);
+      if (isNaN(val) || val < 0) val = 0;
+      winScore = val;
+      // Apply difficulty and reset game (scores reset)
+      const diff = getSelectedDifficulty();
+      resetGame(winScore, diff);
+    });
+
+    document.getElementById('restartRound').addEventListener('click', () => {
+      restartRound();
+    });
+
+    document.getElementById('resetScores').addEventListener('click', () => {
+      // Reset just scores, keep current difficulty and winScore
+      playerScore = 0;
+      compScore = 0;
+      gamePaused = false;
+      overlay.innerHTML = '';
+      updateScoreDisplay();
+      // restart round
+      restartRound();
+    });
+
+    // Keyboard input
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        keys[e.key] = true;
+        e.preventDefault();
+      }
+      if (e.key === 'r' || e.key === 'R') {
+        // Reset scores (like Reset Scores button)
+        playerScore = 0;
+        compScore = 0;
+        gamePaused = false;
+        overlay.innerHTML = '';
+        updateScoreDisplay();
+        restartRound();
+      }
+    });
+    window.addEventListener('keyup', (e) => {
+      if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+        keys[e.key] = false;
+        e.preventDefault();
+      }
+    });
+
+    // Initialize default settings & start
+    (function init() {
+      const defaultDiff = getSelectedDifficulty();
+      applyDifficulty(defaultDiff);
+      winScore = parseInt(winInput.value, 10) || 0;
+      ball = resetBall('left');
+      updateScoreDisplay();
+      draw();
+      rafId = requestAnimationFrame(update);
+    })();
+  </script>
+</body>
+</html>
