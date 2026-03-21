@@ -331,9 +331,8 @@
       ball = resetBall('left');
       draw();
       // start loop
-      if (!rafId) {
-        rafId = requestAnimationFrame(update);
-      }
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(update);
     }
 
     // Restart round without affecting scores
@@ -343,7 +342,8 @@
       computer.y = (canvas.height - computer.height) / 2;
       ball = resetBall(Math.random() < 0.5 ? 'left' : 'right');
       overlay.innerHTML = '';
-      if (!rafId) rafId = requestAnimationFrame(update);
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(update);
     }
 
     // Apply difficulty selection
